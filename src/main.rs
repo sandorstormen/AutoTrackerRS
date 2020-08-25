@@ -1,3 +1,4 @@
+
 extern crate x11rb;
 extern crate x11;
 use x11::xrecord::*;
@@ -16,16 +17,29 @@ use std::time::*;
 use x11rb::protocol::record::*;
 use x11rb::protocol::Error::*;
 use x11rb::protocol::Event::*;
-use device_query::{DeviceQuery, DeviceState, MouseState, Keycode};
 use std::sync::mpsc;
 use std::thread::*;
 use std::cell::RefCell;
+use lazy_static::*;
+use std::sync::Mutex;
+use std::thread;
+use std::time::*;
 
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
 }
 
+
+lazy_static! {
+    static ref CHANNEL: Mutex<(std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>)> = Mutex::new(mpsc::channel());
+}
+
 fn main() {
+    let channel_mutguard = CHANNEL.lock().unwrap();
+    let (channel_send, _) = channel_mutguard.deref();
+    let tx = channel_send.clone();
+    drop(channel_mutguard);
+
     let (conn, screen_num) = x11rb::connect(None).unwrap();
     let screen = &conn.setup().roots[screen_num];
     let root_window = screen.root;
@@ -33,19 +47,9 @@ fn main() {
     let net_active_atom = conn.intern_atom(true, String::from("_NET_ACTIVE_WINDOW").as_bytes()).unwrap().reply().unwrap().atom;
     let net_wm_atom = conn.intern_atom(true, String::from("_NET_WM_NAME").as_bytes()).unwrap().reply().unwrap().atom;
     let wm_atom = conn.intern_atom(true, String::from("WM_NAME").as_bytes()).unwrap().reply().unwrap().atom;
-    // let mut net_active_window = LazyAtom::new(&conn, false, b"_NET_ACTIVE_WINDOW");
-    // let mut net_wm_name = LazyAtom::new(&conn, false, b"_NET_WM_NAME");
-    // let mut utf8_string = LazyAtom::new(&conn, false, b"UTF8_STRING");
-
-    let (tx, rx): (std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>) = mpsc::channel();
-    
     
     let rec_ver = record::ConnectionExt::record_query_version(&conn, 0, 0).unwrap().reply().unwrap();
     println!("{} {}", rec_ver.major_version, rec_ver.minor_version);
-
-    spawn(|| {
-	read_input_thread(rx);
-    });
     
     // std::thread::sleep(Duration::from_secs(15));
     //let values = ChangeWindowAttributesAux::default().event_mask(xproto::EventMask::KeyPress | xproto::EventMask::ButtonPress | xproto::EventMask::PointerMotion | xproto::EventMask::StructureNotify | xproto::EventMask::SubstructureNotify | xproto::EventMask::FocusChange | xproto::EventMask::PropertyChange);
@@ -57,6 +61,16 @@ fn main() {
 	Ok(res) => println!("No error"),
 	Err(e) => println!("{}", e)
     };
+
+    spawn(|| {
+	read_input_thread();
+    });
+
+    let focus_window = xproto::get_input_focus(&conn).unwrap().reply().unwrap().focus;
+    let res: &[u8] = &get_property(&conn, false, root_window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
+    let name = String::from_utf8_lossy(res);
+    tx.send(String::from(name));
+    
     // present::select_input(&conn, ); //Titta nogrannre
     // device_mask.push(xproto::EventMask::KeyPress);
     // device_mask.push(xproto::EventMask::PointerMotion);
@@ -113,8 +127,9 @@ fn main() {
 			let focus_window = xproto::get_input_focus(&conn).unwrap().reply().unwrap().focus;
 			let res: &[u8] = &get_property(&conn, false, focus_window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
 			let name = String::from_utf8_lossy(res);
-			println!("{}", name);
-			//tx.send(name.clone());
+			if !name.is_empty() {
+			    tx.send(String::from(name));
+			}
 		    }
 		    else if event.atom == net_wm_atom || event.atom == wm_atom {
 			println!("NET_WM_ACTIVE or WM_ACTIVE");
@@ -130,6 +145,7 @@ fn main() {
 		Event::XinputMotion(event) => println!("Input event"),
 		Event::XinputDeviceMotionNotify(event) => println!("Input event"),
 		Event::Error(error) => match_protocol_error(error),
+		Event::ClientMessage(event) => println!("ClientMessage"),
 		_ => println!("Other event")
 	    },
 	    Err(e) => panic!(e)
@@ -209,12 +225,20 @@ fn make_cntx(conn: &impl x11rb::connection::Connection, cntx: u32) {
     //record::ConnectionExt::record_free_context(conn, cntx).unwrap();
 }
 
-fn read_input_thread(rx: std::sync::mpsc::Receiver<String>) {
+fn read_input_thread() {
     // let (input_conn, screen_num) = x11rb::connect(None).unwrap();
     // let screen = &input_conn.setup().roots[screen_num];
     // let root_window = screen.root;
 
-    print_type_of(&input_event_handler);
+    {
+	let channel_mutguard = CHANNEL.lock().unwrap();
+	let (_, rx) = channel_mutguard.deref();
+	
+	PREV_TITLE.with(|prev_title| {
+	    *prev_title.borrow_mut() = rx.recv().unwrap();
+	    println!("Window name: {}", *prev_title.borrow());
+	});
+    }
     
     let c_char: *const std::os::raw::c_char = &mut 0;
     let input_display: *mut x11::xlib::Display;
@@ -235,47 +259,55 @@ fn read_input_thread(rx: std::sync::mpsc::Receiver<String>) {
     unsafe {
 	rc = XRecordCreateContext(input_display, 0, &mut rcs, 1, &mut rr, 1);
     };
-    let wtf: i8 = rx.into();
     unsafe {
 	XRecordEnableContext( input_display, rc, Some(input_event_handler), &mut 0);
     };
 }
 
 #[allow(non_upper_case_globals)]
-unsafe extern "C" fn input_event_handler( c_char: *mut std::os::raw::c_char, hook: *mut XRecordInterceptData) {
+unsafe extern "C" fn input_event_handler( _c_char: *mut std::os::raw::c_char, hook: *mut XRecordInterceptData) {
     match (*hook).category {
-	XRecordFromServer => println!("Från server..."),
+	XRecordFromServer => (),
 	_ => return
     };
-    println!("{}", *c_char);
+    let channel_mutguard = CHANNEL.lock().unwrap();
+    let (_, rx) = channel_mutguard.deref();
+
+    PREV_TITLE.with(|prev_title| {
+	CURRENT_TITLE.with(|current_title| {
+	    PREV_COUNTER.with(|prev_counter| {
+		match rx.try_recv() {
+		    Ok(result) => *current_title.borrow_mut() = result,
+		    Err(_error) => ()
+		}
+		if *prev_title.borrow() == *current_title.borrow() {
+		    println!("{}", *prev_title.borrow());
+		    if prev_counter.elapsed().as_secs() > 10 {
+			
+		    }
+		}
+		else {
+		    println!("{}, {}", *prev_title.borrow(), *current_title.borrow());
+		    *prev_title.borrow_mut() = (*current_title.borrow()).clone();
+		}
+	    });
+	});
+    });
+    /*
     let dt = (*hook).data;
     match *dt {
 	2 => println!("KeyPress"),
 	4 => println!("ButtonPress"),
 	6 => println!("MotionNotify"),
 	_ => return
-    };
-}
-
-unsafe extern "C" fn ret_input_event_handler(rx: std::sync::mpsc::Receiver<String>) -> Box<dyn Fn(*mut std::os::raw::c_char, *mut XRecordInterceptData)> {
-    return |c_char: *mut std::os::raw::c_char, hook: *mut XRecordInterceptData| {
-	match (*hook).category {
-	    XRecordFromServer => println!("Från server..."),
-	    _ => return
-	};
-	println!("{}", *c_char);
-	let dt = (*hook).data;
-	match *dt {
-	    2 => println!("KeyPress"),
-	    4 => println!("ButtonPress"),
-	    6 => println!("MotionNotify"),
-	    _ => return
-	};
-    }
+    };*/
 }
 
 thread_local! (
     static PREV_TITLE: RefCell<String> = RefCell::new(String::from("<uninitialized window>"));
+    static CURRENT_TITLE: RefCell<String> = RefCell::new(String::from("<uninitialized window>"));
+    static PREV_COUNTER: Instant = Instant::now();
+    static WINDOW_TIMES: Vec<(String, String, String)> = Vec::<(String, String, String)>::new();
 );
 
 
