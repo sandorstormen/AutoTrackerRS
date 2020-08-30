@@ -11,10 +11,8 @@ build = "build.rs"
 x11 = "2.18.2"
 libc = "0.2"
 lazy_static = "1.4.0"
-datetime = "0.5.1"
-############
-shared_memory = "0.11.1"
-raw_sync = "0.1.2"
+chrono = "0.4"
+chrono-tz = "0.4"
 
 [dependencies.x11rb]
 version="0.6.0"
