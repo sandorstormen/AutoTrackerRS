@@ -24,6 +24,9 @@ use lazy_static::*;
 use std::sync::Mutex;
 use std::thread;
 use std::time::*;
+use std::fs::File;
+use std::io::prelude::*;
+use std::path::Path;
 
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
@@ -354,7 +357,11 @@ unsafe extern "C" fn input_event_handler( _c_char: *mut std::os::raw::c_char, ho
 				}
 				*prev_title.borrow_mut() = (*current_title.borrow()).clone();
 			    }
-			   
+			    if (*window_times.borrow()).len() >= 10 {
+				let window_times_save = (*window_times.borrow_mut()).clone();
+				save_to_disk(&window_times_save);
+				(*window_times.borrow_mut()).clear();
+			    };
 			    
 			    // println!("--------------------------------------------");
 			    // println!("{:?}", (*window_times.borrow()));
@@ -373,6 +380,23 @@ unsafe extern "C" fn input_event_handler( _c_char: *mut std::os::raw::c_char, ho
 	6 => println!("MotionNotify"),
 	_ => return
     };*/
+}
+
+fn save_to_disk(window_times: &Vec<(String, String, String)>) {
+    let mut writer;
+    
+    if Path::new("window_times.csv").exists() {
+	writer = csv::WriterBuilder::new().has_headers(false).from_writer(std::fs::OpenOptions::new().append(true).open("window_times.csv").unwrap());
+    }
+    else {
+	writer = csv::WriterBuilder::new().has_headers(false).from_writer(std::fs::OpenOptions::new().append(true).create(true).open("window_times.csv").unwrap());
+    }
+    for (window_name, start_time, end_time) in window_times {
+	match writer.write_byte_record(&csv::ByteRecord::from(vec![window_name.as_str(), start_time.as_str(), end_time.as_str()])) {
+	    Ok(_) => (),
+	    Err(e) => eprintln!("Writing csv row error: {}", e)
+	};
+    }
 }
 
 thread_local! (
