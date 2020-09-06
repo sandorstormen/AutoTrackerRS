@@ -1,6 +1,7 @@
 
 extern crate x11rb;
 extern crate x11;
+extern crate encoding;
 use x11::xrecord::*;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
@@ -16,6 +17,8 @@ use std::cell::RefCell;
 use lazy_static::*;
 use std::sync::Mutex;
 use std::path::Path;
+use encoding::{Encoding, DecoderTrap};
+use encoding::all::ISO_8859_1;
 
 #[allow(dead_code)]
 fn print_type_of<T>(_: &T) {
@@ -39,6 +42,9 @@ fn main() {
 
     let net_active_window_atom = conn.intern_atom(true, String::from("_NET_ACTIVE_WINDOW").as_bytes()).unwrap().reply().unwrap().atom;
     let net_wm_name_atom = conn.intern_atom(true, String::from("_NET_WM_NAME").as_bytes()).unwrap().reply().unwrap().atom;
+    let utf8_atom = conn.intern_atom(true, String::from("UTF8_STRING").as_bytes()).unwrap().reply().unwrap().atom;
+    let atom_reply: &[u8] = &conn.get_atom_name(utf8_atom).unwrap().reply().unwrap().name;
+    println!("{}", String::from_utf8_lossy(atom_reply));
     let wm_name_atom = conn.intern_atom(true, String::from("WM_NAME").as_bytes()).unwrap().reply().unwrap().atom;
     
     let rec_ver = record::ConnectionExt::record_query_version(&conn, 0, 0).unwrap().reply().unwrap();
@@ -64,63 +70,53 @@ fn main() {
 	Ok(_) => (),
 	Err(error) => eprintln!("Can't get initial window: {}", error)
     };
-    
+    bool legacy_name_print_out = false;
     loop {
 	match conn.wait_for_event() {
 	    Ok(event) => {
 		if let Event::PropertyNotify(event) = event {
 		    if event.atom == net_active_window_atom {
 			let focus_window = xproto::get_input_focus(&conn).unwrap().reply().unwrap().focus;
-			let res: &[u8] = &get_property(&conn, false, focus_window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
-			let name = String::from_utf8_lossy(res);
+			// let res: &[u8] = &get_property(&conn, false, focus_window, wm_name_atom, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
+			// let name = String::from_utf8_lossy(res);
+			// if !name.is_empty() {
+			//     match tx.send(String::from(name)) {
+			// 	Ok(_) => (),
+			// 	Err(error) => eprintln!("Can't send window: {}", error)
+			//     };
+			// }
+			let res_utf8: &[u8] = &get_property(&conn, false, focus_window, net_wm_name_atom, utf8_atom, 0, 64).unwrap().reply().unwrap().value;
+			let name = match std::str::from_utf8(res_utf8) {
+			    Ok(string) => string,
+			    Err(_error) => {
+				if !legacy_name_print_out {
+				    eprintln!("No _NET_WM_NAME found for windows, defaulting to VM_NAME");
+				    legacy_name_print_out = true;
+				};
+				let legacy_res: &[u8] = &get_property(&conn, false, focus_window, wm_name_atom, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
+				let legacy_name = match std::str::from_utf8(legacy_res) {
+				    Ok(res) => res,
+				    Err(_error) => {
+					eprintln!("WM_NAME error for window, trying to decode in ISO-8859-1 ");
+					match ISO_8859_1.decode(legacy_res, DecoderTrap::Ignore) {
+					    Ok(res) => res,
+					    Err(_error) => {
+						eprintln!("ISO-8859-1 error, using UTF-8 lossy")
+						String::from_utf8_lossy(legacy_res)
+					    },
+					}
+				    }
+				};
+				legacy_name
+			    }
+			};
 			if !name.is_empty() {
 			    match tx.send(String::from(name)) {
 				Ok(_) => (),
 				Err(error) => eprintln!("Can't send window: {}", error)
 			    };
 			}
-			let res_utf8: &[u8] = &get_property(&conn, false, focus_window, net_wm_name_atom, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
-			let name_utf8 = String::from_utf8_lossy(res);
-			for
-			println!("{}", name_utf8);
-			// 1 - 744
-			// 746 - 799
-			// println!("{}", String::from_utf8_lossy(&get_property(&conn, false, focus_window, 331 as u32, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value));
-			// for i in 1..744 {
-			//     let mut atom = &get_property(&conn, false, focus_window, i as u32, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
-			//     let mut atom_str = String::from_utf8_lossy(atom);
-			//     if !atom_str.is_empty() {
-			// 	println!("{}: {}", i, atom_str);
-			//     }
-			// }
-			// for i in 746..799 {
-			//     let mut atom = &get_property(&conn, false, focus_window, i as u32, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
-			//     let mut atom_str = String::from_utf8_lossy(atom);
-			//     if !atom_str.is_empty() {
-			// 	println!("{}: {}", i, atom_str);
-			//     }
-			// }
-			for i in 0..1000 {
-			    let mut atom = match get_property(&conn, false, focus_window, i as u32, AtomEnum::STRING, 0, 64).unwrap().reply() {
-				Ok(res) => res.value,
-				Err(_) => std::vec::Vec::<u8>::new()
-			    };
-			    let mut atom_str = String::from_utf8_lossy(&atom);
-			    let mut extended_str = String::new();
-			    for c in atom.iter() {
-				//println!("{}", *c as char);
-			    }
-			    if !atom_str.is_empty() {
-				println!("{}: {}", i, atom_str);
-			    }
-			    if i == 999 {
-				println!("i = {}", i)
-			    }
-			}
-			// for i in 746..10000 {
-			//      println!("{}", i);
-			//      println!("{}", String::from_utf8_lossy(&get_property(&conn, false, focus_window, i as u32, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value));
-			// }
+			
 		    }
 		    // NET_WM_ACTIVE or WM_ACTIVE
 		}
