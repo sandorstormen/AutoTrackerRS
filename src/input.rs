@@ -1,240 +1,205 @@
+
 extern crate x11rb;
-use std::error::Error;
-use x11rb::connection::{Connection, SequenceNumber};
-use x11rb::errors::{ConnectionError, ReplyError, ReplyOrIdError};
+extern crate x11;
+extern crate encoding;
+use x11::xrecord::*;
+use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
-use x11rb::wrapper::ConnectionExt as _;
-use x11rb::COPY_DEPTH_FROM_PARENT;
 use x11rb::protocol::*;
-use x11rb::protocol::xinput::*;
-use x11rb::x11_utils::TryParse;
-use std::process::exit;
 use std::time::*;
 use x11rb::protocol::record::*;
 use x11rb::protocol::Error::*;
 use x11rb::protocol::Event::*;
-use device_query::{DeviceQuery, DeviceState, MouseState, Keycode};
 use std::sync::mpsc;
 use std::thread::*;
+use std::cell::RefCell;
+use lazy_static::*;
+use std::sync::Mutex;
+use std::path::Path;
+use encoding::{Encoding, DecoderTrap};
+use encoding::all::ISO_8859_1;
 
-fn main() {
+thread_local! (
+    static PREV_TITLE: RefCell<String> = RefCell::new(String::from("<uninitialized window>"));
+    static CURRENT_TITLE: RefCell<String> = RefCell::new(String::from("<uninitialized window>"));
+    static START_DATE: RefCell<chrono::DateTime<chrono::offset::Local>> = RefCell::new(chrono::offset::Local::now());
+    static END_DATE: chrono::DateTime<chrono::offset::Local> = chrono::offset::Local::now();
+    static PREV_COUNTER: RefCell<Instant> = RefCell::new(Instant::now());
+    static WINDOW_TIMES: RefCell<Vec<(String, String, String)>> = RefCell::new(Vec::<(String, String, String)>::new());
+);
+
+lazy_static! {
+    pub static ref CHANNEL: Mutex<(std::sync::mpsc::Sender<String>, std::sync::mpsc::Receiver<String>)> = Mutex::new(mpsc::channel());
+}
+
+pub fn read_input_thread() {
     let (input_conn, screen_num) = x11rb::connect(None).unwrap();
     let screen = &input_conn.setup().roots[screen_num];
     let root_window = screen.root;
-    let cntx = input_conn.generate_id().unwrap();
-    let range_input = x11rb::protocol::record::Range {
-	core_requests: Range8 {
-	    first: 0,
-	    last: 0
-	},
-	core_replies: Range8 {
-	    first: 0,
-	    last: 0
-	},
-	ext_requests: ExtRange {
-	    major: Range8 {
-		first: 0,
-		last: 0
-	    },
-	    minor: Range16 {
-		first: 0,
-		last: 0
-	    }
-	},
-	ext_replies: ExtRange {
-	    major: Range8 {
-		first: 0,
-		last: 0
-	    },
-	    minor: Range16 {
-		first: 0,
-		last: 0
-	    }
-	},
-	delivered_events: Range8 {
-	    first: 0,
-	    last: 0
-	},
-	device_events: Range8 {
-	    first: 2,
-	    last: 36
-	},
-	errors: Range8 {
-	    first: 0,
-	    last: 0
-	},
-	client_started: false,
-	client_died: false
-    };
-    let void_cookie = record::create_context(&input_conn, cntx, record::HType::FromServerTime.into(), &[x11rb::protocol::record::CS::AllClients.into()], &[range_input]);
-    // let void_cookie = record::create_context(&input_conn, cntx, 7, &[3], &[range_input]);
-    match void_cookie.unwrap().check() {
-	Ok(_res) => (),
-	Err(error) => println!("Error when making context\n{}", error)
-    };
-    match record::enable_context(&input_conn, cntx).unwrap().reply() {
-	Ok(res) => println!("Worked! {}, {}, {}", res.xid_base, res.server_time, res.element_header),
-	Err(e) => panic!("Could not create context\n{}", e)
-    };
-    // let get_cntx_reply = record::get_context(&input_conn, cntx).unwrap();
-    // let tid = Instant::now();
-    // match get_cntx_reply.reply() {
-    // 	Ok(res) => {
-    // 	    println!("Händer något? {}", tid.elapsed().as_secs());
-    // 	    println!("Enabled?: {}, Intercepted clients: {}", res.enabled, res.num_intercepted_clients());
-    // 	    let intercepted_clients = res.intercepted_clients;
-    // 	    for client in intercepted_clients {
-    // 		println!("num_ranges: {}, client_resource {}", client.num_ranges(), client.client_resource);
-    // 	    }	    
-    // 	},
-    // 	Err(e) => println!("{}, {}", e, tid.elapsed().as_secs())
-    // };
-    //record::ConnectionExt::record_free_context(input_conn, cntx).unwrap();
-    record::register_clients(&input_conn, cntx, record::HType::FromServerTime.into(), &[x11rb::protocol::record::CS::AllClients.into()], &[range_input]).unwrap().check().unwrap();
-    loop {
-	println!("Looping");
-	let event = input_conn.wait_for_event().unwrap();
-	match event {
-	    Event::ButtonPress(event) => println!("Input event"),
-	    Event::KeyPress(event) => println!("Input event"),
-	    Event::MotionNotify(event) => println!("Input event"),
-	    Event::XinputButtonPress(event) => println!("Input event"),
-	    Event::XinputDeviceButtonPress(event) => println!("Input event"),
-	    Event::XinputDeviceKeyPress(event) => println!("Input event"),
-	    Event::XinputKeyPress(event) => println!("Input event"),
-	    Event::XinputMotion(event) => println!("Input event"),
-	    Event::XinputDeviceMotionNotify(event) => println!("Input event"),
-	    Event::Error(error) => match_protocol_error(error),
-	    _ => match_event(event)
-	}
+
+    set_focused_window();
+    
+    let c_char: *const std::os::raw::c_char = &mut 0;
+    let input_display: *mut x11::xlib::Display;
+    unsafe {
+	input_display = x11::xlib::XOpenDisplay(c_char) as *mut x11::xlib::Display;
     }
+    
+    let mut rr;
+    let mut rcs: XRecordClientSpec;
+    let rc: XRecordContext;
+    unsafe {
+	rr = XRecordAllocRange() as *mut XRecordRange;
+	(*rr).device_events.first = 2;
+	(*rr).device_events.last = 6;
+    };
+    rcs = x11::xrecord::XRecordAllClients;
+
+    unsafe {
+	rc = XRecordCreateContext(input_display, 0, &mut rcs, 1, &mut rr, 1);
+    };
+    unsafe {
+	XRecordEnableContext( input_display, rc, Some(input_event_handler), &mut 0);
+    };
 }
 
-fn match_event(event: Event) {
-    match event {
-	Event::Unknown(res) => println!("Unknown event"),
-	Error(_event) => println!("Error"),
-	ButtonPress(_event) => println!("Button press event"),
-	ButtonRelease(_event) => println!("ButtonRelease event"),
-	CirculateNotify(_event) => println!("CirculateNotify event"),
-	CirculateRequest(_event) => println!("CirculateRequest event"),
-	ClientMessage(_event) => println!("ClientMessage event"),
-	ColormapNotify(_event) => println!("ColormapNotify event"),
-	ConfigureNotify(_event) => println!("ConfigureNotify event"),
-	ConfigureRequest(_event) => println!("ConfigureRequest event"),
-	CreateNotify(_event) => println!("CreateNotify event"),
-	DestroyNotify(_event) => println!("DestroyNotify event"),
-	EnterNotify(_event) => println!("EnterNotify event"),
-	Expose(_event) => println!("Expose event"),
-	FocusIn(_event) => println!("FocusIn event"),
-	FocusOut(_event) => println!("FocusOut event"),
-	GeGeneric(_event) => println!("GeGeneric event"),
-	GraphicsExposure(_event) => println!("GraphicsExposure event"),
-	GravityNotify(_event) => println!("GravityNotify event"),
-	KeyPress(_event) => println!("KeyPress event"),
-	KeyRelease(_event) => println!("KeyRelease event"),
-	KeymapNotify(_event) => println!("KeymapNotify event"),
-	LeaveNotify(_event) => println!("LeaveNotify event"),
-	MapNotify(_event) => println!("MapNotify event"),
-	MapRequest(_event) => println!("MapRequest event"),
-	MappingNotify(_event) => println!("MappingNotify event"),
-	MotionNotify(_event) => println!("MotionNotify event"),
-	NoExposure(_event) => println!("NoExposure event"),
-	PropertyNotify(_event) => println!("PropertyNotify event"),
-	ReparentNotify(_event) => println!("ReparentNotify event"),
-	ResizeRequest(_event) => println!("ResizeRequest event"),
-	SelectionClear(_event) => println!("SelectionClear event"),
-	SelectionNotify(_event) => println!("SelectionNotify event"),
-	SelectionRequest(_event) => println!("SelectionRequest event"),
-	UnmapNotify(_event) => println!("UnmapNotify event"),
-	VisibilityNotify(_event) => println!("VisibilityNotify event"),
-	DamageNotify(_event) => println!("DamageNotify event"),
-	Dri2BufferSwapComplete(_event) => println!("Dri2BufferSwapComplete event"),
-	Dri2InvalidateBuffers(_event) => println!("Dri2InvalidateBuffers event"),
-	GlxBufferSwapComplete(_event) => println!("GlxBufferSwapComplete event"),
-	GlxPbufferClobber(_event) => println!("GlxPbufferClobber event"),
-	PresentCompleteNotify(_event) => println!("PresentCompleteNotify event"),
-	PresentConfigureNotify(_event) => println!("PresentCompleteNotify event"),
-	PresentGeneric(_event) => println!("PresentGeneric event"),
-	PresentIdleNotify(_event) => println!("PresentIdleNotify event"),
-	PresentRedirectNotify(_event) => println!("PresentRedirectNotify event"),
-	RandrNotify(_event) => println!("RandrNotify event"),
-	RandrScreenChangeNotify(_event) => println!("RandrScreenChangeNotify event"),
-	ScreensaverNotify(_event) => println!("ScreensaverNotify event"),
-	ShapeNotify(_event) => println!("ShapeNotify event"),
-	ShmCompletion(_event) => println!("ShmCompletion event"),
-	SyncAlarmNotify(_event) => println!("SyncAlarmNotify event"),
-	_ => println!("Some other event")
-    }
+
+fn set_focused_window() {
+    match x11rb::connect(None) {
+	Ok(res) => {
+	    let (conn, _screen_num) = res;
+	    match x11rb::protocol::xproto::get_input_focus(&conn) {
+		Ok(res) => {
+		    match res.reply() {
+			Ok(res) => {
+			    let res: &[u8] = &get_property(&conn, false, res.focus, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
+			    let name = String::from_utf8_lossy(res);
+			    PREV_TITLE.with(|prev_title| {
+				CURRENT_TITLE.with(|current_title|{
+				    (*prev_title.borrow_mut()) = String::from(name.clone());
+				    (*current_title.borrow_mut()) = String::from(name.clone());
+				});
+			    });
+			},
+			Err(e) => {
+			    PREV_TITLE.with(|prev_title| {
+				CURRENT_TITLE.with(|current_title|{
+				    (*prev_title.borrow_mut()) = String::from("<uninitialized window>");
+				    (*current_title.borrow_mut()) = String::from("<uninitialized window>");
+				});
+			    });
+			}
+		    }
+		},
+		Err(e) => {
+		    PREV_TITLE.with(|prev_title| {
+			CURRENT_TITLE.with(|current_title|{
+			    (*prev_title.borrow_mut()) = String::from("<uninitialized window>");
+			    (*current_title.borrow_mut()) = String::from("<uninitialized window>");
+			});
+		    });
+		}
+	    };
+	},
+	Err(e) => {
+	    PREV_TITLE.with(|prev_title| {
+		CURRENT_TITLE.with(|current_title|{
+		    (*prev_title.borrow_mut()) = String::from("<uninitialized window>");
+		    (*current_title.borrow_mut()) = String::from("<uninitialized window>");
+		});
+	    });
+	}
+    };
 }
-fn match_protocol_error(error: x11rb::protocol::Error) {
-    match error {
-	Access(AccessError) => println!("AccessError"),
-	Alloc(AllocError) => println!("AllocError"),
-	Atom(AtomError) => println!("AtomError"),
-	Colormap(ColormapError) => println!("ColormapError"),
-	Cursor(CursorError) => println!("Cursorerror"),
-	Drawable(DrawableError)  => println!("Drawableerror"),
-	Font(FontError)  => println!("Fonterror"),
-	GContext(GContextError) => println!("GContexterror"),
-	IDChoice(IDChoiceError) => println!("IDchoiceerror"),
-	Implementation(ImplementationError) => println!("Implementationerror"),
-	Length(LengthError) => println!("Lengtherror"),
-	Match(MatchError) => println!("Matcherror"),
-	Name(NameError) => println!("Nameerror"),
-	Pixmap(PixmapError) => println!("Pixmaperror"),
-	Request(RequestError) => println!("Requesterror"),
-	Value(ValueError) => println!("Valueerror"),
-	Window(WindowError) => println!("Windowerror"),
-	DamageBadDamage(BadDamageError) => println!("BadDamageerror"),
-	GlxBadContext(BadContextError) => println!("BadContexterror"),
-	GlxBadContextState(BadContextStateError) => println!("Badcontextstateerror"),
-	GlxBadContextTag(BadContextTagError) => println!("BadContexttagerror"),
-	GlxBadCurrentDrawable(BadCurrentDrawableError) => println!("BadCurrentdrawableerror"),
-	GlxBadCurrentWindow(BadCurrentWindowError) => println!("BadWindowerror"),
-	GlxBadDrawable(BadDrawableError) => println!("BadDamageerror"),
-	GlxBadFBConfig(BadFBConfigError) => println!("BadFBconfigerror"),
-	GlxBadLargeRequest(BadLargeRequestError) => println!("BadLargerequesterror"),
-	GlxBadPbuffer(BadPbufferError) => println!("BadPbuffererror"),
-	GlxBadPixmap(BadPixmapError) => println!("BadPixmaperror"),
-	_ => println!("umatched error")
-	/*
-	GlxBadRenderRequest(BadRenderRequestError) => println!(""),
-	GlxBadWindow(BadWindowError) => println!(""),
-	GlxGLXBadProfileARB(GLXBadProfileARBError) => println!(""),
-	GlxUnsupportedPrivateRequest(UnsupportedPrivateRequestError) => println!(""),
-	RandrBadCrtc(BadCrtcError) => println!(""),
-	RandrBadMode(BadModeError) => println!(""),
-	RandrBadOutput(BadOutputError) => println!(""),
-	RandrBadProvider(BadProviderError) => println!(""),
-	RecordBadContext(BadContextError) => println!(""),
-	RenderGlyph(GlyphError) => println!(""),
-	RenderGlyphSet(GlyphSetError) => println!(""),
-	RenderPictFormat(PictFormatError) => println!(""),
-	RenderPictOp(PictOpError) => println!(""),
-	RenderPicture(PictureError) => println!(""),
-	ShmBadSeg(BadSegError) => println!(""),
-	SyncAlarm(AlarmError) => println!(""),
-	SyncCounter(CounterError) => println!(""),
-	Xf86vidmodeBadClock(BadClockError) => println!(""),
-	Xf86vidmodeBadHTimings(BadHTimingsError) => println!(""),
-	Xf86vidmodeBadVTimings(BadVTimingsError) => println!(""),
-	Xf86vidmodeClientNotLocal(ClientNotLocalError) => println!(""),
-	Xf86vidmodeExtensionDisabled(ExtensionDisabledError) => println!(""),
-	Xf86vidmodeModeUnsuitable(ModeUnsuitableError) => println!(""),
-	Xf86vidmodeZoomLocked(ZoomLockedError) => println!(""),
-	XfixesBadRegion(BadRegionError) => println!(""),
-	XinputClass(ClassError) => println!(""),
-	XinputDevice(DeviceError) => println!(""),
-	XinputDeviceBusy(DeviceBusyError) => println!(""),
-	XinputEvent(EventError) => println!(""),
-	XinputMode(ModeError) => println!(""),
-	XkbKeyboard(KeyboardError) => println!(""),
-	XprintBadContext(BadContextError) => println!(""),
-	XprintBadSequence(BadSequenceError) => println!(""),
-	XvBadControl(BadControlError) => println!(""),
-	XvBadEncoding(BadEncodingError) => println!(""),
-	XvBadPort(BadPortError) => println!("")*/
+
+#[allow(non_upper_case_globals)]
+unsafe extern "C" fn input_event_handler( _c_char: *mut std::os::raw::c_char, hook: *mut XRecordInterceptData) {
+    match (*hook).category {
+	XRecordFromServer => (),
+	_ => return
+    };
+    let channel_mutguard = CHANNEL.lock().unwrap();
+    let (_, rx) = channel_mutguard.deref();
+
+    PREV_TITLE.with(|prev_title| {
+	CURRENT_TITLE.with(|current_title| {
+	    WINDOW_TIMES.with(|window_times| {
+		START_DATE.with(|start_date| {
+		    END_DATE.with(|end_date| {
+			PREV_COUNTER.with(|prev_counter| {
+			    match rx.try_recv() {
+				Ok(result) => *(current_title.borrow_mut()) = result,
+				Err(_error) => ()
+			    }
+			    if *prev_title.borrow() == *current_title.borrow() {
+				// println!("{}", *prev_title.borrow());
+				if (*prev_counter.borrow()).elapsed().as_secs() > 10 {
+				    let window_title = current_title.borrow().clone();
+				    let tuple = ( window_title, (*start_date.borrow()).to_rfc3339(), ((*start_date.borrow()) + chrono::Duration::seconds(10)).to_rfc3339() );
+				    (*window_times.borrow_mut()).push(tuple);
+				    (*prev_counter.borrow_mut()) = Instant::now();
+				    (*start_date.borrow_mut()) = chrono::offset::Local::now();
+				}
+				else {
+				    (*prev_counter.borrow_mut()) = Instant::now();
+				}
+			    }
+			    else if *prev_title.borrow() != *current_title.borrow() {
+				//println!("{}, {}", *prev_title.borrow(), *current_title.borrow());
+				if (*prev_counter.borrow()).elapsed().as_secs() > 10 {
+				    let window_title = prev_title.borrow().clone();
+				    let tuple = ( window_title, (*start_date.borrow()).to_rfc3339(), ((*start_date.borrow()) + chrono::Duration::seconds(10)).to_rfc3339() );
+				    (*window_times.borrow_mut()).push(tuple);
+				    (*prev_counter.borrow_mut()) = Instant::now();
+				    (*start_date.borrow_mut()) = chrono::offset::Local::now();
+				}
+				else {
+				    let window_title = prev_title.borrow().clone();
+				    let tuple = ( window_title, (*start_date.borrow()).to_rfc3339(), chrono::offset::Local::now().to_rfc3339() );
+				    (*window_times.borrow_mut()).push(tuple);
+				    (*prev_counter.borrow_mut()) = Instant::now();
+				    (*start_date.borrow_mut()) = chrono::offset::Local::now();
+				}
+				*prev_title.borrow_mut() = (*current_title.borrow()).clone();
+			    }
+			    if (*window_times.borrow()).len() >= 10 {
+				let window_times_save = (*window_times.borrow_mut()).clone();
+				spawn(move || {
+				    save_to_disk(window_times_save);
+				});
+				(*window_times.borrow_mut()).clear();
+			    };
+			});
+		    });
+		});
+	    });
+	});
+    });
+    /*
+    let dt = (*hook).data;
+    match *dt {
+    2 => println!("KeyPress"),
+    4 => println!("ButtonPress"),
+    6 => println!("MotionNotify"),
+    _ => return
+};*/
+}
+
+
+fn save_to_disk(window_times: Vec<(String, String, String)>) {
+    let mut writer;
+    
+    if Path::new("window_times.csv").exists() {
+	writer = csv::WriterBuilder::new().has_headers(false).from_writer(std::fs::OpenOptions::new().append(true).open("window_times.csv").unwrap());
+    }
+    else {
+	writer = csv::WriterBuilder::new().has_headers(false).from_writer(std::fs::OpenOptions::new().append(true).create(true).open("window_times.csv").unwrap());
+    }
+    for (window_name, start_time, end_time) in window_times {
+	match writer.write_byte_record(&csv::ByteRecord::from(vec![window_name.as_str(), start_time.as_str(), end_time.as_str()])) {
+	    Ok(_) => (),
+	    Err(e) => eprintln!("Writing csv row error: {}", e)
+	};
     }
 }
