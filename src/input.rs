@@ -34,14 +34,63 @@ lazy_static! {
 }
 
 pub fn read_input_thread() {
-    let (input_conn, screen_num) = x11rb::connect(None).unwrap();
-    let screen = &input_conn.setup().roots[screen_num];
-    let root_window = screen.root;
+    let (ctrl_conn, screen_num) = x11rb::connect(None).unwrap();
+    let (data_conn, screen_num) = x11rb::connect(None).unwrap();
 
     set_focused_window();
     
     let c_char: *const std::os::raw::c_char = &mut 0;
     let input_display: *mut x11::xlib::Display;
+
+    let rc = ctrl_conn.generate_id().unwrap();
+    let empty = record::Range8 {
+        first: 0,
+        last: 0,
+    };
+    let empty_ext = record::ExtRange {
+        major: empty,
+        minor: record::Range16 {
+            first: 0,
+            last: 0,
+        },
+    };
+    let range = record::Range {
+        core_requests: empty,
+        core_replies: empty,
+        ext_requests: empty_ext,
+        ext_replies: empty_ext,
+        delivered_events: empty,
+        device_events: record::Range8 {
+            // We want notification of core X11 events between key press and motion notify
+            first: xproto::KEY_PRESS_EVENT,
+            last: xproto::MOTION_NOTIFY_EVENT,
+        },
+        errors: empty,
+        client_started: false,
+        client_died: false,
+    };
+   
+    record::create_context(&ctrl_conn, rc, 0, &[record::CS::AllClients.into()], &[range]).unwrap().check().unwrap();
+    const START_OF_DATA: u8 = 4;
+    const RECORD_FROM_SERVER: u8 = 0;
+    loop {
+	let data = record::enable_context(&data_conn, rc).unwrap().reply().unwrap();
+	if data.client_swapped {
+	    eprintln!("Byte swapped")
+	}
+	else if data.category == RECORD_FROM_SERVER {
+	    println!("RECORD FROM SERver")
+	}
+	else if data.category == START_OF_DATA {
+	    println!("Start of data")
+	}
+	else {
+	    println!("Other")
+	}
+    }
+    
+
+    /*
     unsafe {
 	input_display = x11::xlib::XOpenDisplay(c_char) as *mut x11::xlib::Display;
     }
@@ -61,7 +110,80 @@ pub fn read_input_thread() {
     };
     unsafe {
 	XRecordEnableContext( input_display, rc, Some(input_event_handler), &mut 0);
+    };*/
+}
+
+
+fn make_cntx(conn: &impl x11rb::connection::Connection, cntx: u32) {
+    let range_input = x11rb::protocol::record::Range {
+	core_requests: Range8 {
+	    first: 0,
+	    last: 0
+	},
+	core_replies: Range8 {
+	    first: 0,
+	    last: 0
+	},
+	ext_requests: ExtRange {
+	    major: Range8 {
+		first: 0,
+		last: 0
+	    },
+	    minor: Range16 {
+		first: 0,
+		last: 0
+	    }
+	},
+	    ext_replies: ExtRange {
+	    major: Range8 {
+		first: 0,
+		last: 0
+	    },
+	    minor: Range16 {
+		first: 0,
+		last: 0
+	    }
+	},
+	    delivered_events: Range8 {
+	    first: 0,
+	    last: 0
+	},
+	    device_events: Range8 {
+		first: 2,
+		last: 36
+	},
+	    errors: Range8 {
+	    first: 0,
+	    last: 0
+	},
+	    client_started: false,
+	    client_died: false
     };
+    // let void_cookie = record::create_context(conn, cntx, record::HType::FromServerTime.into(), &[x11rb::protocol::record::CS::AllClients.into()], &[range_input]);
+    let void_cookie = record::create_context(conn, cntx, 7, &[3], &[range_input]);
+    match void_cookie.unwrap().check() {
+	Ok(_res) => (),
+	Err(error) => println!("Error when making context\n{}", error)
+    };
+    match record::enable_context(conn, cntx).unwrap().reply() {
+	Ok(res) => println!("Worked! {}, {}, {}", res.xid_base, res.server_time, res.element_header),
+	Err(e) => panic!("Could not create context\n{}", e)
+    };
+    let get_cntx_reply = record::get_context(conn, cntx).unwrap();
+    let tid = Instant::now();
+    match get_cntx_reply.reply() {
+	Ok(res) => {
+	    println!("Händer något? {}", tid.elapsed().as_secs());
+	    println!("Enabled?: {}, Intercepted clients: {}", res.enabled, res.num_intercepted_clients());
+	    let intercepted_clients = res.intercepted_clients;
+	    for client in intercepted_clients {
+		println!("num_ranges: {}, client_resource {}", client.num_ranges(), client.client_resource);
+	    }
+	    
+	},
+	Err(e) => println!("{}, {}", e, tid.elapsed().as_secs())
+    };
+    //record::ConnectionExt::record_free_context(conn, cntx).unwrap();
 }
 
 
