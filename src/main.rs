@@ -1,18 +1,12 @@
 
 extern crate x11rb;
 extern crate x11;
+extern crate encoding;
 use x11::xrecord::*;
-use std::error::Error;
-use x11rb::connection::{Connection, SequenceNumber};
-use x11rb::errors::{ConnectionError, ReplyError, ReplyOrIdError};
+use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
-use x11rb::wrapper::ConnectionExt as _;
-use x11rb::COPY_DEPTH_FROM_PARENT;
 use x11rb::protocol::*;
-use x11rb::protocol::xinput::*;
-use x11rb::x11_utils::TryParse;
-use std::process::exit;
 use std::time::*;
 use x11rb::protocol::record::*;
 use x11rb::protocol::Error::*;
@@ -22,9 +16,11 @@ use std::thread::*;
 use std::cell::RefCell;
 use lazy_static::*;
 use std::sync::Mutex;
-use std::thread;
-use std::time::*;
+use std::path::Path;
+use encoding::{Encoding, DecoderTrap};
+use encoding::all::ISO_8859_1;
 
+#[allow(dead_code)]
 fn print_type_of<T>(_: &T) {
     println!("{}", std::any::type_name::<T>())
 }
@@ -44,15 +40,16 @@ fn main() {
     let screen = &conn.setup().roots[screen_num];
     let root_window = screen.root;
 
-    let net_active_atom = conn.intern_atom(true, String::from("_NET_ACTIVE_WINDOW").as_bytes()).unwrap().reply().unwrap().atom;
-    let net_wm_atom = conn.intern_atom(true, String::from("_NET_WM_NAME").as_bytes()).unwrap().reply().unwrap().atom;
-    let wm_atom = conn.intern_atom(true, String::from("WM_NAME").as_bytes()).unwrap().reply().unwrap().atom;
+    let net_active_window_atom = conn.intern_atom(true, String::from("_NET_ACTIVE_WINDOW").as_bytes()).unwrap().reply().unwrap().atom;
+    let net_wm_name_atom = conn.intern_atom(true, String::from("_NET_WM_NAME").as_bytes()).unwrap().reply().unwrap().atom;
+    let utf8_atom = conn.intern_atom(true, String::from("UTF8_STRING").as_bytes()).unwrap().reply().unwrap().atom;
+    let atom_reply: &[u8] = &conn.get_atom_name(utf8_atom).unwrap().reply().unwrap().name;
+    println!("{}", String::from_utf8_lossy(atom_reply));
+    let wm_name_atom = conn.intern_atom(true, String::from("WM_NAME").as_bytes()).unwrap().reply().unwrap().atom;
     
     let rec_ver = record::ConnectionExt::record_query_version(&conn, 0, 0).unwrap().reply().unwrap();
-    println!("{} {}", rec_ver.major_version, rec_ver.minor_version);
-    
-    // std::thread::sleep(Duration::from_secs(15));
-    //let values = ChangeWindowAttributesAux::default().event_mask(xproto::EventMask::KeyPress | xproto::EventMask::ButtonPress | xproto::EventMask::PointerMotion | xproto::EventMask::StructureNotify | xproto::EventMask::SubstructureNotify | xproto::EventMask::FocusChange | xproto::EventMask::PropertyChange);
+    eprintln!("X11 Xtst-package, record extension version: {}.{}", rec_ver.major_version, rec_ver.minor_version);
+
     match conn.change_window_attributes(root_window, &(ChangeWindowAttributesAux::default().event_mask(xproto::EventMask::PropertyChange | xproto::EventMask::KeyPress | xproto::EventMask::PointerMotion | xproto::EventMask::ButtonPress))) {
 	Ok(res) => println!("attr changed"),
 	Err(e) => println!("err {}", e)
@@ -69,88 +66,62 @@ fn main() {
     let focus_window = xproto::get_input_focus(&conn).unwrap().reply().unwrap().focus;
     let res: &[u8] = &get_property(&conn, false, root_window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
     let name = String::from_utf8_lossy(res);
-    tx.send(String::from(name));
-    
-    // present::select_input(&conn, ); //Titta nogrannre
-    // device_mask.push(xproto::EventMask::KeyPress);
-    // device_mask.push(xproto::EventMask::PointerMotion);
-    // device_mask.push(xproto::EventMask::ButtonPress);
-    // let devices = xinput::list_input_devices(&conn).unwrap().reply().unwrap();
-    // let mut device_ids = Vec::new();
-    // let mut device_names = std::collections::HashMap::new();
-    // for id in devices.devices {
-    // 	device_ids.push(id.device_id);
-    // };
-    // for i in 0..devices.names.len()-1 {
-    // 	let convert: &[u8] = &devices.names[i].name;
-    // 	device_names.insert(device_ids[i], String::from_utf8_lossy(convert));
-    // }
-    // for id in device_ids {
-    // 	match xinput::open_device(&conn, id).unwrap().reply() {
-    // 	    Ok(_res) => (),
-    // 	    Err(_err) => match device_names.get(&id) {
-    // 		Some(name) => println!("Error with device: {}", name),
-    // 		None => println!("Error with device of unknown name")
-    // 	    }
-    // 	};
-    // };
-    // let mut prev_val = 0;
-    // // 512 - 3839
-    // for i in 0..5000 {
-    // 	match xinput::select_extension_event(&conn, root_window, &[i]).unwrap().check() {
-    // 	    Ok(res) => (),
-    // 	    Err(e) => ()
-    // 	}
-    // }
-    
-    
-    // let mut focus_mask = Vec::new();
-    // focus_mask.push(XIEventMask::Hierarchy.into());
-    // let focus_in_mask = x11rb::protocol::xinput::EventMask{
-    //  	deviceid: 0,
-    //  	mask: focus_mask
-    // };
-    // xinput::xi_select_events(&conn, root_window, &[focus_in_mask]);
-    //x11rb::protocol::xproto::change_property(&conn, x11rb::protocol::xproto::PropMode::Replace, root_window, x11rb::protocol::present::EventMask::CompleteNotify, x11rb::protocol::xproto::Atom, 32, 1, x11rb::protocol::Event::PropertyNotify);
-    // x11rb::protocol::present::select_input(&conn, x11rb::protocol::present::COMPLETE_NOTIFY_EVENT as u32, root_window, x11rb::protocol::Event::PropertyNotify);
-    // let a: u32 = 0;
-    // let b: u32 = 5;
-    // let mot_ev = xproto::get_motion_events(&conn, root_window, a, b).unwrap().reply().unwrap();
-    // for i in mot_ev.events {
-    // 	println!("{}, {}, {}", i.time, i.x, i.y);
-    // }
+    match tx.send(String::from(name)) {
+	Ok(_) => (),
+	Err(error) => eprintln!("Can't get initial window: {}", error)
+    };
+    let mut legacy_name_print_out: bool = false;
     loop {
 	match conn.wait_for_event() {
-	    Ok(event) => match event {
-		Event::PropertyNotify(event) => {
-		    if event.atom == net_active_atom {
+	    Ok(event) => {
+		if let Event::PropertyNotify(event) = event {
+		    if event.atom == net_active_window_atom {
 			let focus_window = xproto::get_input_focus(&conn).unwrap().reply().unwrap().focus;
-			let res: &[u8] = &get_property(&conn, false, focus_window, AtomEnum::WM_NAME, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
-			let name = String::from_utf8_lossy(res);
+			// let res: &[u8] = &get_property(&conn, false, focus_window, wm_name_atom, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
+			// let name = String::from_utf8_lossy(res);
+			// if !name.is_empty() {
+			//     match tx.send(String::from(name)) {
+			// 	Ok(_) => (),
+			// 	Err(error) => eprintln!("Can't send window: {}", error)
+			//     };
+			// }
+			let res_utf8: &[u8] = &get_property(&conn, false, focus_window, net_wm_name_atom, utf8_atom, 0, 64).unwrap().reply().unwrap().value;
+			let name = match String::from_utf8(res_utf8.to_vec()) {
+			    Ok(string) => string,
+			    Err(_error) => {
+				if !legacy_name_print_out {
+				    eprintln!("No _NET_WM_NAME found for windows, defaulting to VM_NAME");
+				    legacy_name_print_out = true;
+				};
+				let legacy_res: &[u8] = &get_property(&conn, false, focus_window, wm_name_atom, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
+				let legacy_name = match String::from_utf8(legacy_res.to_vec()) {
+				    Ok(res) => res,
+				    Err(_error) => {
+					eprintln!("WM_NAME error for window, trying to decode in ISO-8859-1 ");
+					String::from_utf8_lossy(legacy_res)
+				    }.to_string()
+				};
+				legacy_name
+			    }
+			};
 			if !name.is_empty() {
-			    tx.send(String::from(name));
+			    match tx.send(String::from(name)) {
+				Ok(_) => (),
+				Err(error) => eprintln!("Can't send window: {}", error)
+			    };
 			}
+			
 		    }
-		    else if event.atom == net_wm_atom || event.atom == wm_atom {
-			println!("NET_WM_ACTIVE or WM_ACTIVE");
-		    }
-		},
-		Event::ButtonPress(event) => println!("Input event"),
-		Event::KeyPress(event) => println!("Input event"),
-		Event::MotionNotify(event) => println!("Input event"),
-		Event::XinputButtonPress(event) => println!("Input event"),
-		Event::XinputDeviceButtonPress(event) => println!("Input event"),
-		Event::XinputDeviceKeyPress(event) => println!("Input event"),
-		Event::XinputKeyPress(event) => println!("Input event"),
-		Event::XinputMotion(event) => println!("Input event"),
-		Event::XinputDeviceMotionNotify(event) => println!("Input event"),
-		Event::Error(error) => match_protocol_error(error),
-		Event::ClientMessage(event) => println!("ClientMessage"),
-		_ => println!("Other event")
+		    // NET_WM_ACTIVE or WM_ACTIVE
+		}
 	    },
-	    Err(e) => panic!(e)
+	    Err(error) => eprintln!("Could not get X11 event: {}", error)
 	}
     }
+}
+
+fn test_property(conn: &impl x11rb::connection::RequestConnection, focus_window: x11rb::protocol::xproto::Window, property: u32) {
+    // println!("{}", String::from_utf8_lossy(&get_property(&conn, false, focus_window, property, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value));
 }
 
 fn make_cntx(conn: &impl x11rb::connection::Connection, cntx: u32) {
@@ -354,11 +325,13 @@ unsafe extern "C" fn input_event_handler( _c_char: *mut std::os::raw::c_char, ho
 				}
 				*prev_title.borrow_mut() = (*current_title.borrow()).clone();
 			    }
-			   
-			    
-			    // println!("--------------------------------------------");
-			    // println!("{:?}", (*window_times.borrow()));
-			    // println!("--------------------------------------------");
+			    if (*window_times.borrow()).len() >= 10 {
+				let window_times_save = (*window_times.borrow_mut()).clone();
+				spawn(move || {
+				    save_to_disk(window_times_save);
+				});
+				(*window_times.borrow_mut()).clear();
+			    };
 			});
 		    });
 		});
@@ -375,6 +348,23 @@ unsafe extern "C" fn input_event_handler( _c_char: *mut std::os::raw::c_char, ho
     };*/
 }
 
+fn save_to_disk(window_times: Vec<(String, String, String)>) {
+    let mut writer;
+    
+    if Path::new("window_times.csv").exists() {
+	writer = csv::WriterBuilder::new().has_headers(false).from_writer(std::fs::OpenOptions::new().append(true).open("window_times.csv").unwrap());
+    }
+    else {
+	writer = csv::WriterBuilder::new().has_headers(false).from_writer(std::fs::OpenOptions::new().append(true).create(true).open("window_times.csv").unwrap());
+    }
+    for (window_name, start_time, end_time) in window_times {
+	match writer.write_byte_record(&csv::ByteRecord::from(vec![window_name.as_str(), start_time.as_str(), end_time.as_str()])) {
+	    Ok(_) => (),
+	    Err(e) => eprintln!("Writing csv row error: {}", e)
+	};
+    }
+}
+
 thread_local! (
     static PREV_TITLE: RefCell<String> = RefCell::new(String::from("<uninitialized window>"));
     static CURRENT_TITLE: RefCell<String> = RefCell::new(String::from("<uninitialized window>"));
@@ -383,10 +373,6 @@ thread_local! (
     static PREV_COUNTER: RefCell<Instant> = RefCell::new(Instant::now());
     static WINDOW_TIMES: RefCell<Vec<(String, String, String)>> = RefCell::new(Vec::<(String, String, String)>::new());
 );
-
-
-
-
 
 fn match_protocol_error(error: x11rb::protocol::Error) {
     match error {
@@ -418,50 +404,49 @@ fn match_protocol_error(error: x11rb::protocol::Error) {
 	GlxBadLargeRequest(_) => println!("BadLargerequesterror"),
 	GlxBadPbuffer(_) => println!("BadPbuffererror"),
 	GlxBadPixmap(_) => println!("BadPixmaperror"),
+	GlxBadRenderRequest(_) => println!("BadRenderRequestError"),
+	GlxBadWindow(_) => println!("RawWindowError"),
+	GlxGLXBadProfileARB(_) => println!("GLXBadProfileARBError"),
+	GlxUnsupportedPrivateRequest(_) => println!("UnsupportedPrivateRequestError"),
+	RandrBadCrtc(_) => println!("BadCrtcError"),
+	RandrBadMode(_) => println!("BadModeError"),
+	RandrBadOutput(_) => println!("BadOutputError"),
+	RandrBadProvider(_) => println!("BadProviderError"),
+	RecordBadContext(_) => println!("BadContextError"),
+	RenderGlyph(_) => println!("BadContextError"),
+	RenderGlyphSet(_) => println!("GlyphSetError"),
+	RenderPictFormat(_) => println!("PictFormatError"),
+	RenderPictOp(_) => println!("PictOpError"),
+	RenderPicture(_) => println!("PictureError"),
+	ShmBadSeg(_) => println!("BadSegError"),
+	SyncAlarm(_) => println!("AlarmError"),
+	SyncCounter(_) => println!("CounterError"),
+	Xf86vidmodeBadClock(_) => println!("BadClockError"),
+	Xf86vidmodeBadHTimings(_) => println!("BadHTimingsError"),
+	Xf86vidmodeBadVTimings(_) => println!("BadVTimingsError"),
+	Xf86vidmodeClientNotLocal(_) => println!("ClientNotLocalError"),
+	Xf86vidmodeExtensionDisabled(_) => println!("ExtensionDisabledError"),
+	Xf86vidmodeModeUnsuitable(_) => println!("ModeUnsuitableError"),
+	Xf86vidmodeZoomLocked(_) => println!("ZoomLockedError"),
+	XfixesBadRegion(_) => println!("BadRegionError"),
+	XinputClass(_) => println!("ClassError"),
+	XinputDevice(_) => println!("DeviceError"),
+	XinputDeviceBusy(_) => println!("DeviceBusyError"),
+	XinputEvent(_) => println!("EventError"),
+	XinputMode(_) => println!("ModeError"),
+	XkbKeyboard(_) => println!("KeyboardError"),
+	XprintBadContext(_) => println!("BadContextError"),
+	XprintBadSequence(_) => println!("BadSequenceError"),
+	XvBadControl(_) => println!("BadControlError"),
+	XvBadEncoding(_) => println!("BadEncodingError"),
+	XvBadPort(_) => println!("BadPortError"),
 	_ => println!("umatched error")
-	/*
-	GlxBadRenderRequest(BadRenderRequestError) => println!(""),
-	GlxBadWindow(BadWindowError) => println!(""),
-	GlxGLXBadProfileARB(GLXBadProfileARBError) => println!(""),
-	GlxUnsupportedPrivateRequest(UnsupportedPrivateRequestError) => println!(""),
-	RandrBadCrtc(BadCrtcError) => println!(""),
-	RandrBadMode(BadModeError) => println!(""),
-	RandrBadOutput(BadOutputError) => println!(""),
-	RandrBadProvider(BadProviderError) => println!(""),
-	RecordBadContext(BadContextError) => println!(""),
-	RenderGlyph(GlyphError) => println!(""),
-	RenderGlyphSet(GlyphSetError) => println!(""),
-	RenderPictFormat(PictFormatError) => println!(""),
-	RenderPictOp(PictOpError) => println!(""),
-	RenderPicture(PictureError) => println!(""),
-	ShmBadSeg(BadSegError) => println!(""),
-	SyncAlarm(AlarmError) => println!(""),
-	SyncCounter(CounterError) => println!(""),
-	Xf86vidmodeBadClock(BadClockError) => println!(""),
-	Xf86vidmodeBadHTimings(BadHTimingsError) => println!(""),
-	Xf86vidmodeBadVTimings(BadVTimingsError) => println!(""),
-	Xf86vidmodeClientNotLocal(ClientNotLocalError) => println!(""),
-	Xf86vidmodeExtensionDisabled(ExtensionDisabledError) => println!(""),
-	Xf86vidmodeModeUnsuitable(ModeUnsuitableError) => println!(""),
-	Xf86vidmodeZoomLocked(ZoomLockedError) => println!(""),
-	XfixesBadRegion(BadRegionError) => println!(""),
-	XinputClass(ClassError) => println!(""),
-	XinputDevice(DeviceError) => println!(""),
-	XinputDeviceBusy(DeviceBusyError) => println!(""),
-	XinputEvent(EventError) => println!(""),
-	XinputMode(ModeError) => println!(""),
-	XkbKeyboard(KeyboardError) => println!(""),
-	XprintBadContext(BadContextError) => println!(""),
-	XprintBadSequence(BadSequenceError) => println!(""),
-	XvBadControl(BadControlError) => println!(""),
-	XvBadEncoding(BadEncodingError) => println!(""),
-	XvBadPort(BadPortError) => println!("")*/
     }
 }
 
 fn match_event(event: Event) {
     match event {
-	Event::Unknown(res) => println!("Unknown event"),
+	Event::Unknown(_event) => println!("Unknown event"),
 	Error(_event) => println!("Error"),
 	ButtonPress(_event) => println!("Button press event"),
 	ButtonRelease(_event) => println!("ButtonRelease event"),
