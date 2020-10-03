@@ -70,7 +70,7 @@ fn main() {
 	Ok(_) => (),
 	Err(error) => eprintln!("Can't get initial window: {}", error)
     };
-    let legacy_name_print_out: bool = false;
+    let mut legacy_name_print_out: bool = false;
     loop {
 	match conn.wait_for_event() {
 	    Ok(event) => {
@@ -86,7 +86,7 @@ fn main() {
 			//     };
 			// }
 			let res_utf8: &[u8] = &get_property(&conn, false, focus_window, net_wm_name_atom, utf8_atom, 0, 64).unwrap().reply().unwrap().value;
-			let name = match std::str::from_utf8(res_utf8) {
+			let name = match String::from_utf8(res_utf8.to_vec()) {
 			    Ok(string) => string,
 			    Err(_error) => {
 				if !legacy_name_print_out {
@@ -94,18 +94,12 @@ fn main() {
 				    legacy_name_print_out = true;
 				};
 				let legacy_res: &[u8] = &get_property(&conn, false, focus_window, wm_name_atom, AtomEnum::STRING, 0, 64).unwrap().reply().unwrap().value;
-				let legacy_name = match std::str::from_utf8(legacy_res) {
+				let legacy_name = match String::from_utf8(legacy_res.to_vec()) {
 				    Ok(res) => res,
 				    Err(_error) => {
 					eprintln!("WM_NAME error for window, trying to decode in ISO-8859-1 ");
-					match ISO_8859_1.decode(legacy_res, DecoderTrap::Ignore) {
-					    Ok(res) => res,
-					    Err(_error) => {
-						eprintln!("ISO-8859-1 error, using UTF-8 lossy");
-						String::from_utf8_lossy(legacy_res).into_owned()
-					    },
-					},
-				    }
+					String::from_utf8_lossy(legacy_res)
+				    }.to_string()
 				};
 				legacy_name
 			    }
