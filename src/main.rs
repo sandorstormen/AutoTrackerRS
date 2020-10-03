@@ -49,7 +49,7 @@ fn main() {
     
     let rec_ver = record::ConnectionExt::record_query_version(&conn, 0, 0).unwrap().reply().unwrap();
     eprintln!("X11 Xtst-package, record extension version: {}.{}", rec_ver.major_version, rec_ver.minor_version);
-    
+
     match conn.change_window_attributes(root_window, &(ChangeWindowAttributesAux::default().event_mask(xproto::EventMask::PropertyChange | xproto::EventMask::KeyPress | xproto::EventMask::PointerMotion | xproto::EventMask::ButtonPress))) {
 	Ok(res) => println!("attr changed"),
 	Err(e) => println!("err {}", e)
@@ -70,7 +70,7 @@ fn main() {
 	Ok(_) => (),
 	Err(error) => eprintln!("Can't get initial window: {}", error)
     };
-    bool legacy_name_print_out = false;
+    let legacy_name_print_out: bool = false;
     loop {
 	match conn.wait_for_event() {
 	    Ok(event) => {
@@ -101,10 +101,10 @@ fn main() {
 					match ISO_8859_1.decode(legacy_res, DecoderTrap::Ignore) {
 					    Ok(res) => res,
 					    Err(_error) => {
-						eprintln!("ISO-8859-1 error, using UTF-8 lossy")
-						String::from_utf8_lossy(legacy_res)
+						eprintln!("ISO-8859-1 error, using UTF-8 lossy");
+						String::from_utf8_lossy(legacy_res).into_owned()
 					    },
-					}
+					},
 				    }
 				};
 				legacy_name
